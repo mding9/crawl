@@ -913,13 +913,7 @@ static void _choose_seed(newgame_def& ng, newgame_def& choice,
 bool choose_game(newgame_def& ng, newgame_def& choice,
                  const newgame_def& defaults)
 {
-#ifdef USE_TILE_WEB
-    tiles.set_ui_state(UI_CRT);
-#endif
-
-    clrscr();
-
-    textcolour(LIGHTGREY);
+    // XXX: is set_ui_state(UI_NORMAL) needed here?
 
     ng.name = choice.name;
     ng.type = choice.type;
