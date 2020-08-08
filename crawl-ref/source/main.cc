@@ -18,7 +18,7 @@
 #include <utility> // pair
 #include <vector>
 #include <fcntl.h>
-#ifdef DGAMELAUNCH
+#if defined(UNIX) || defined(TARGET_COMPILER_MINGW)
 # include <unistd.h>
 #endif
 
@@ -33,17 +33,13 @@
 
 #include "ability.h"
 #include "abyss.h"
-#include "acquire.h"
 #include "act-iter.h"
 #include "adjust.h"
 #include "areas.h"
 #include "arena.h"
 #include "artefact.h"
-#include "art-enum.h"
 #include "beam.h"
-#include "bloodspatter.h"
 #include "branch.h"
-#include "butcher.h"
 #include "chardump.h"
 #include "cio.h"
 #include "cloud.h"
@@ -51,9 +47,8 @@
 #include "colour.h"
 #include "command.h"
 #include "coord.h"
-#include "coordit.h"
+#include "corpse.h"
 #include "crash.h"
-#include "dactions.h"
 #include "database.h"
 #include "dbg-scan.h"
 #include "dbg-util.h"
@@ -64,7 +59,6 @@
 #include "dgl-message.h"
 #endif
 #include "dgn-overview.h"
-#include "dgn-shoals.h"
 #include "directn.h"
 #include "dlua.h"
 #include "dungeon.h"
@@ -72,16 +66,12 @@
 #include "env.h"
 #include "errors.h"
 #include "evoke.h"
-#include "exercise.h"
 #include "fight.h"
 #include "files.h"
 #include "fineff.h"
-#include "food.h"
-#include "fprop.h"
 #include "god-abil.h"
 #include "god-companions.h"
 #include "god-conduct.h"
-#include "god-item.h"
 #include "god-passive.h"
 #include "god-prayer.h"
 #include "hints.h"
@@ -93,6 +83,7 @@
 #include "items.h"
 #include "item-use.h"
 #include "jobs.h"
+#include "known-items.h"
 #include "level-state-type.h"
 #include "libutil.h"
 #include "luaterp.h"
@@ -102,7 +93,6 @@
 #include "map-knowledge.h"
 #include "mapmark.h"
 #include "maps.h"
-#include "melee-attack.h"
 #include "message.h"
 #include "misc.h"
 #include "mon-abil.h"
@@ -117,10 +107,8 @@
 #include "notes.h"
 #include "options.h"
 #include "output.h"
-#include "player-equip.h"
 #include "player.h"
 #include "player-reacts.h"
-#include "player-stats.h"
 #include "prompt.h"
 #include "quiver.h"
 #include "random.h"
@@ -128,17 +116,11 @@
 #include "shopping.h"
 #include "shout.h"
 #include "skills.h"
-#include "sound.h"
 #include "species.h"
 #include "spl-book.h"
 #include "spl-cast.h"
 #include "spl-clouds.h"
 #include "spl-damage.h"
-#include "spl-goditem.h"
-#include "spl-other.h"
-#include "spl-selfench.h"
-#include "spl-summoning.h"
-#include "spl-transloc.h"
 #include "spl-util.h"
 #include "stairs.h"
 #include "startup.h"
@@ -150,7 +132,7 @@
 #include "terrain.h"
 #include "throw.h"
 #ifdef USE_TILE
- #include "tiledef-dngn.h"
+ #include "rltiles/tiledef-dngn.h"
  #include "tilepick.h"
 #endif
 #include "timed-effects.h"
@@ -274,6 +256,10 @@ int main(int argc, char *argv[])
     real_crawl_state = new game_state();
     real_env = new crawl_environment();
 #endif
+    // do this explicitly so that static initialization order woes can be
+    // ignored.
+    msg::force_stderr echo(MB_MAYBE);
+
     init_crash_handler();
 
     _startup_asserts();
@@ -306,8 +292,22 @@ int main(int argc, char *argv[])
     // make sure all the expected data directories exist
     validate_basedirs();
 
-    // Read the init file.
-    read_init_file();
+    {
+        // Read the init file -- first pass. This pass ignores lua. It'll get
+        // reread with lua on starting a game.
+#ifdef USE_TILE_WEB
+        // on webtiles, prevent echoing a player's rc errors to the webtiles
+        // log. At this point, io is not initialized so for other builds we
+        // do want to echo, in case things go extremely wrong. For dgl builds,
+        // players will see the error in their log anyways. (Regular webtiles
+        // actually gets a popup, but this is rarely used except for dev work)
+
+        // TODO: would be simpler to just never echo? Do other builds really
+        // need this outside of debugging contexts?
+        msg::force_stderr suppress_log_stderr(MB_FALSE);
+#endif
+        read_init_file();
+    }
 
     // Now parse the args again, looking for everything else.
     parse_args(argc, argv, false);
@@ -353,6 +353,8 @@ static void _reset_game()
     reset_hud();
     StashTrack = StashTracker();
     travel_cache = TravelCache();
+    // TODO: hint state needs seem work
+    Hints.hints_events.init(false);
     clear_level_target();
     overview_clear();
     clear_message_window();
@@ -425,10 +427,14 @@ NORETURN static void _launch_game()
                     << species_name(you.species)
                     << " " << get_job_name(you.char_class) << ".</yellow>"
                     << endl;
+        // TODO: seeded sprint?
+        if (crawl_state.type == GAME_TYPE_CUSTOM_SEED)
+            msg::stream << "<white>" << seed_description() << "</white>" << endl;
     }
 
 #ifdef USE_TILE
     viewwindow();
+    update_screen();
 #endif
 
     if (game_start)
@@ -559,6 +565,7 @@ static void _show_commandline_options_help()
     puts("  -gdb/-no-gdb     produce gdb backtrace when a crash happens (default:on)");
 #endif
     puts("  -playable-json   list playable species, jobs, and character combos.");
+    puts("  -branches-json   list branch data.");
 
 #if defined(TARGET_OS_WINDOWS) && defined(USE_TILE_LOCAL)
     text_popup(help, L"Dungeon Crawl command line help");
@@ -770,7 +777,6 @@ static bool _cmd_is_repeatable(command_type cmd, bool is_again = false)
     case CMD_PICKUP:
     case CMD_DROP:
     case CMD_DROP_LAST:
-    case CMD_BUTCHER:
     case CMD_GO_UPSTAIRS:
     case CMD_GO_DOWNSTAIRS:
     case CMD_WIELD_WEAPON:
@@ -891,7 +897,7 @@ static void _center_cursor()
 }
 
 // We have to refresh the SH display if the player's incapacitated state
-// changes (getting confused/paralyzed/etc. sets SH to 0, recovering
+// changes (getting confused/paralysed/etc. sets SH to 0, recovering
 // from the condition sets SH back to normal).
 struct disable_check
 {
@@ -908,10 +914,16 @@ struct disable_check
     bool was_disabled;
 };
 
-static void _update_place_info()
+static void _update_place_stats()
 {
     if (you.num_turns == -1)
         return;
+
+    // not strictly stored as part of PlaceInfo, but this is a natural place
+    // to do this update.
+    CrawlHashTable &time_tracking = you.props[TIME_PER_LEVEL_KEY].get_table();
+    int &cur_value = time_tracking[level_id::current().describe()].get_int();
+    cur_value += you.time_taken;
 
     PlaceInfo  delta;
 
@@ -1000,6 +1012,7 @@ static void _input()
         revive();
         bring_to_safety();
         redraw_screen();
+        update_screen();
     }
 
     // Unhandled things that should have caused death.
@@ -1133,6 +1146,13 @@ static void _input()
         if (!crawl_state.is_replaying_keys())
             you.elapsed_time_at_last_input = you.elapsed_time;
 
+        // We need to capture this value, since crawl_state.prev_cmd is updated
+        // to be equal to the current command before process_command runs.
+        // This means that certain values CMD_PREV_CMD_AGAIN will be kept
+        // verbatim; the alternative would require keeping some more state. But
+        // it's not too important for the current use.
+        const command_type real_prev_cmd = crawl_state.prev_cmd;
+
         if (cmd != CMD_PREV_CMD_AGAIN && cmd != CMD_NO_CMD
             && !crawl_state.is_replaying_keys())
         {
@@ -1146,7 +1166,7 @@ static void _input()
         // binding, your turn may be ended by the first invoke of the
         // macro.
         if (!you.turn_is_over && cmd != CMD_NEXT_CMD)
-            process_command(cmd);
+            process_command(cmd, real_prev_cmd);
 
         repeat_again_rec.paused = true;
 
@@ -1190,6 +1210,7 @@ static void _input()
         // This else will be triggered by instantaneous actions, such as
         // Chei's temporal distortion.
         viewwindow();
+        update_screen();
     }
 
     update_can_currently_train();
@@ -1559,12 +1580,6 @@ static void _experience_check()
                 << " (" << you.num_turns << " turns)"
                 << endl;
 #ifdef DEBUG_DIAGNOSTICS
-    if (you.gourmand())
-    {
-        mprf(MSGCH_DIAGNOSTICS, "Gourmand charge: %d",
-             you.duration[DUR_GOURMAND]);
-    }
-
     mprf(MSGCH_DIAGNOSTICS, "Turns spent on this level: %d",
          env.turns_on_level);
 #endif
@@ -1603,12 +1618,6 @@ static void _toggle_travel_speed()
 
 static void _do_rest()
 {
-    if (apply_starvation_penalties())
-    {
-        mpr("You're too hungry to rest.");
-        return;
-    }
-
     if (i_feel_safe())
     {
         if ((you.hp == you.hp_max || !player_regenerates_hp())
@@ -1641,7 +1650,7 @@ static void _do_display_map()
 #endif
 
     level_pos pos;
-    const bool travel = show_map(pos, true, true, true);
+    const bool travel = show_map(pos, true, true);
 
 #ifdef USE_TILE_LOCAL
     mpr("Returning to the game...");
@@ -1688,7 +1697,7 @@ static void _do_list_gold()
 // e.g. list_jewellery, etc.
 // calling this directly will not record the command for later replay; if you
 // want to ensure that it's recorded, see macro.cc:process_command_on_record.
-void process_command(command_type cmd)
+void process_command(command_type cmd, command_type prev_cmd)
 {
     you.apply_berserk_penalty = true;
 
@@ -1756,8 +1765,7 @@ void process_command(command_type cmd)
             && !is_processing_macro()
             && you.real_time_delta
                <= chrono::milliseconds(Options.autofight_warning)
-            && (crawl_state.prev_cmd == CMD_AUTOFIGHT
-                || crawl_state.prev_cmd == CMD_AUTOFIGHT_NOMOVE))
+            && (prev_cmd == CMD_AUTOFIGHT || prev_cmd == CMD_AUTOFIGHT_NOMOVE))
         {
             mprf(MSGCH_DANGER, "You should not fight recklessly!");
         }
@@ -1819,9 +1827,11 @@ void process_command(command_type cmd)
         break;
 
     case CMD_INSPECT_FLOOR:
-        request_autopickup();
         if (player_on_single_stack() && !you.running)
             pickup(true);
+        else
+            // Forced autopickup if CMD_INSPECT_FLOOR is used twice in a row
+            autopickup(prev_cmd == CMD_INSPECT_FLOOR);
         break;
     case CMD_SHOW_TERRAIN: toggle_show_terrain(); break;
     case CMD_ADJUST_INVENTORY: adjust(); break;
@@ -1841,10 +1851,8 @@ void process_command(command_type cmd)
         break;
 
         // Action commands.
-    case CMD_BUTCHER:              butchery();               break;
     case CMD_CAST_SPELL:           do_cast_spell_cmd(false); break;
     case CMD_DISPLAY_SPELLS:       inspect_spells();         break;
-    case CMD_EAT:                  eat_food();               break;
     case CMD_FIRE:                 fire_thing();             break;
     case CMD_FORCE_CAST_SPELL:     do_cast_spell_cmd(true);  break;
     case CMD_LOOK_AROUND:          do_look_around();         break;
@@ -1875,7 +1883,7 @@ void process_command(command_type cmd)
 
     case CMD_EVOKE_WIELDED:
     case CMD_FORCE_EVOKE_WIELDED:
-        if (!evoke_item(you.equip[EQ_WEAPON], cmd != CMD_FORCE_EVOKE_WIELDED))
+        if (!evoke_item(you.equip[EQ_WEAPON]))
             flush_input_buffer(FLUSH_ON_FAILURE);
         break;
 
@@ -1891,12 +1899,32 @@ void process_command(command_type cmd)
 
         // Informational commands.
     case CMD_DISPLAY_CHARACTER_STATUS: display_char_status();          break;
-    case CMD_DISPLAY_COMMANDS:         show_help(); redraw_screen(); break;
+    case CMD_DISPLAY_COMMANDS:
+        show_help();
+        redraw_screen();
+        update_screen();
+        break;
     case CMD_DISPLAY_INVENTORY:        display_inventory();            break;
-    case CMD_DISPLAY_KNOWN_OBJECTS: check_item_knowledge(); redraw_screen(); break;
-    case CMD_DISPLAY_MUTATIONS: display_mutations(); redraw_screen();  break;
-    case CMD_DISPLAY_RUNES: display_runes(); redraw_screen();          break;
-    case CMD_DISPLAY_SKILLS:           skill_menu(); redraw_screen();  break;
+    case CMD_DISPLAY_KNOWN_OBJECTS:
+        check_item_knowledge();
+        redraw_screen();
+        update_screen();
+        break;
+    case CMD_DISPLAY_MUTATIONS:
+        display_mutations();
+        redraw_screen();
+        update_screen();
+        break;
+    case CMD_DISPLAY_RUNES:
+        display_runes();
+        redraw_screen();
+        update_screen();
+        break;
+    case CMD_DISPLAY_SKILLS:
+        skill_menu();
+        redraw_screen();
+        update_screen();
+        break;
     case CMD_EXPERIENCE_CHECK:         _experience_check();            break;
     case CMD_FULL_VIEW:                full_describe_view();           break;
     case CMD_INSCRIBE_ITEM:            prompt_inscribe_item();         break;
@@ -1904,7 +1932,11 @@ void process_command(command_type cmd)
     case CMD_LIST_GOLD:                _do_list_gold();                break;
     case CMD_LIST_JEWELLERY:           list_jewellery();               break;
     case CMD_MAKE_NOTE:                make_user_note();               break;
-    case CMD_REPLAY_MESSAGES: replay_messages(); redraw_screen();      break;
+    case CMD_REPLAY_MESSAGES:
+        replay_messages();
+        redraw_screen();
+        update_screen();
+        break;
     case CMD_RESISTS_SCREEN:           print_overview_screen();        break;
     case CMD_LOOKUP_HELP:           keyhelp_query_descriptions();      break;
 
@@ -1912,6 +1944,7 @@ void process_command(command_type cmd)
     {
         describe_god(you.religion);
         redraw_screen();
+        update_screen();
         break;
     }
 
@@ -1982,7 +2015,10 @@ void process_command(command_type cmd)
 #endif
 
         // Game commands.
-    case CMD_REDRAW_SCREEN: redraw_screen(); break;
+    case CMD_REDRAW_SCREEN:
+        redraw_screen();
+        update_screen();
+        break;
 
 #ifdef USE_UNIX_SIGNALS
     case CMD_SUSPEND_GAME:
@@ -1996,6 +2032,7 @@ void process_command(command_type cmd)
         console_startup();
 #endif
         redraw_screen();
+        update_screen();
         break;
 #endif
 
@@ -2075,8 +2112,10 @@ static void _prep_input()
 
     you.redraw_status_lights = true;
     print_stats();
+    update_screen();
 
     viewwindow();
+    update_screen();
     maybe_update_stashes();
     if (check_for_interesting_features() && you.running.is_explore())
         stop_running();
@@ -2171,6 +2210,7 @@ void world_reacts()
         crawl_state.viewport_monster_hp = false;
         crawl_state.viewport_weapons = false;
         viewwindow();
+        update_screen();
     }
 
     update_monsters_in_view();
@@ -2239,11 +2279,10 @@ void world_reacts()
     if (!crawl_state.game_is_arena())
         player_reacts_to_monsters();
 
-    wu_jian_end_of_turn_effects();
-
     add_auto_excludes();
 
     viewwindow();
+    update_screen();
 
     if (you.cannot_act() && any_messages()
         && crawl_state.repeat_cmd != CMD_WIZARD)
@@ -2261,7 +2300,7 @@ void world_reacts()
         if (you.num_turns < INT_MAX)
             you.num_turns++;
 
-        _update_place_info();
+        _update_place_stats();
 
         if (env.turns_on_level < INT_MAX)
             env.turns_on_level++;
@@ -2293,12 +2332,6 @@ static command_type _get_next_cmd()
     check_messages();
 #endif
 
-#ifdef DEBUG_DIAGNOSTICS
-    // Save hunger at start of round for use with hunger "delta-meter"
-    // in output.cc.
-    you.old_hunger = you.hunger;
-#endif
-
 #ifdef DEBUG_ITEM_SCAN
     debug_item_scan();
 #endif
@@ -2325,6 +2358,12 @@ static command_type _get_next_cmd()
 // real ones.
 static command_type _keycode_to_command(keycode_type key)
 {
+#ifndef USE_TILE_LOCAL
+    // ignore all input if the terminal is too small
+    if (crawl_state.smallterm)
+        return CMD_NEXT_CMD;
+#endif
+
     switch (key)
     {
 #ifdef USE_TILE
@@ -2350,7 +2389,10 @@ static keycode_type _get_next_keycode()
     {
         keyin = unmangle_direction_keys(getch_with_command_macros());
         if (keyin == CK_REDRAW)
+        {
             redraw_screen();
+            update_screen();
+        }
         else
             break;
     }
@@ -2426,7 +2468,6 @@ static void _swing_at_target(coord_def move)
         }
         else if (!you.fumbles_attack())
             mpr("You swing at nothing.");
-        make_hungry(3, true);
         // Take the usual attack delay.
         you.time_taken = you.attack_delay().roll();
     }

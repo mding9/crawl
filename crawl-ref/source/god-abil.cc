@@ -29,7 +29,6 @@
 #include "fight.h"
 #include "files.h"
 #include "fineff.h"
-#include "food.h"
 #include "format.h" // formatted_string
 #include "god-blessing.h"
 #include "god-companions.h"
@@ -42,7 +41,6 @@
 #include "item-status-flag-type.h"
 #include "items.h"
 #include "item-use.h"
-#include "level-state-type.h"
 #include "libutil.h"
 #include "losglobal.h"
 #include "macro.h"
@@ -51,7 +49,6 @@
 #include "message.h"
 #include "mon-act.h"
 #include "mon-behv.h"
-#include "mon-book.h"
 #include "mon-death.h"
 #include "mon-gear.h" // H: give_weapon()/give_armour()
 #include "mon-place.h"
@@ -69,13 +66,11 @@
 #include "potion.h"
 #include "prompt.h"
 #include "religion.h"
-#include "rot.h"
 #include "shout.h"
 #include "skill-menu.h"
 #include "spl-book.h"
 #include "spl-goditem.h"
 #include "spl-monench.h"
-#include "spl-summoning.h"
 #include "spl-transloc.h"
 #include "spl-util.h"
 #include "spl-wpnench.h"
@@ -86,7 +81,7 @@
 #include "teleport.h" // monster_teleport
 #include "terrain.h"
 #ifdef USE_TILE
- #include "tiledef-main.h"
+ #include "rltiles/tiledef-main.h"
 #endif
 #include "timed-effects.h"
 #include "traps.h"
@@ -703,6 +698,8 @@ recite_eligibility zin_check_recite_to_single_monster(const monster *mon,
             elig += '0' + eligibility[i];
         dprf("Eligibility: %s", elig.c_str());
     }
+#else
+    UNUSED(quiet);
 #endif
 
     bool maybe_eligible = false;
@@ -959,7 +956,7 @@ bool zin_recite_to_single_monster(const coord_def& where)
         if (check < 5)
         {
             // nastier -- fallthrough if immune
-            if (coinflip() && mon->res_rotting() <= 1)
+            if (coinflip() && mon->res_rotting() < ROT_RESIST_FULL)
                 effect = zin_eff::rot;
             else
                 effect = zin_eff::smite;
@@ -988,7 +985,7 @@ bool zin_recite_to_single_monster(const coord_def& where)
         // immune, of course.
         if (check < 5)
         {
-            if (coinflip() && mon->res_rotting() <= 1)
+            if (coinflip() && mon->res_rotting() < ROT_RESIST_FULL)
                 effect = zin_eff::rot;
             else
                 effect = zin_eff::smite;
@@ -1059,7 +1056,7 @@ bool zin_recite_to_single_monster(const coord_def& where)
         break;
 
     case zin_eff::confuse:
-        if (!mon->check_clarity(false)
+        if (!mon->check_clarity()
             && mon->add_ench(mon_enchant(ENCH_CONFUSION, degree, &you,
                              (degree + random2(spellpower)) * BASELINE_DELAY)))
         {
@@ -1455,7 +1452,9 @@ bool vehumet_supports_spell(spell_type spell)
         || spell == SPELL_OLGREBS_TOXIC_RADIANCE
         || spell == SPELL_VIOLENT_UNRAVELLING
         || spell == SPELL_INNER_FLAME
-        || spell == SPELL_IGNITION)
+        || spell == SPELL_IGNITION
+        || spell == SPELL_FROZEN_RAMPARTS
+        || spell == SPELL_ABSOLUTE_ZERO)
     {
         return true;
     }
@@ -1473,8 +1472,7 @@ void trog_do_trogs_hand(int pow)
 
 void trog_remove_trogs_hand()
 {
-    if (you.duration[DUR_REGENERATION] == 0)
-        mprf(MSGCH_DURATION, "Your skin stops crawling.");
+    mprf(MSGCH_DURATION, "Your skin stops crawling.");
     mprf(MSGCH_DURATION, "You feel less resistant to hostile enchantments.");
     you.duration[DUR_TROGS_HAND] = 0;
 }
@@ -1690,7 +1688,7 @@ bool beogh_resurrect()
         {
             found_any = true;
             if (yesno(("Resurrect "
-                       + si->props[ORC_CORPSE_KEY].get_monster().name(DESC_THE)
+                       + si->props[ORC_CORPSE_KEY].get_monster().full_name(DESC_THE)
                        + "?").c_str(), true, 'n'))
             {
                 corpse = &*si;
@@ -1927,7 +1925,7 @@ bool kiku_receive_corpses(int pow)
         define_monster(dummy);
         dummy.position = *ri;
 
-        item_def* corpse = place_monster_corpse(dummy, true, true);
+        item_def* corpse = place_monster_corpse(dummy, true);
         if (!corpse)
             continue;
 
@@ -2161,7 +2159,7 @@ bool cheibriados_slouch()
             return false;
         }
 
-    targeter_los hitfunc(&you, LOS_DEFAULT);
+    targeter_radius hitfunc(&you, LOS_DEFAULT);
     if (stop_attack_prompt(hitfunc, "harm", _act_slouchable))
         return false;
 
@@ -2259,6 +2257,7 @@ bool ashenzari_transfer_knowledge()
         if (is_invalid_skill(you.transfer_from_skill))
         {
             redraw_screen();
+            update_screen();
             return false;
         }
 
@@ -2286,6 +2285,7 @@ bool ashenzari_transfer_knowledge()
     you.transfer_total_skill_points = you.transfer_skill_points;
 
     redraw_screen();
+    update_screen();
     return true;
 }
 
@@ -2521,27 +2521,25 @@ static potion_type _gozag_potion_list[][4] =
 {
     { POT_HEAL_WOUNDS, NUM_POTIONS, NUM_POTIONS, NUM_POTIONS },
     { POT_HEAL_WOUNDS, POT_CURING, NUM_POTIONS, NUM_POTIONS },
-    { POT_HEAL_WOUNDS, POT_MAGIC, NUM_POTIONS, NUM_POTIONS, },
+    { POT_HEAL_WOUNDS, POT_MAGIC, NUM_POTIONS, NUM_POTIONS },
     { POT_CURING, POT_MAGIC, NUM_POTIONS, NUM_POTIONS },
     { POT_HEAL_WOUNDS, POT_BERSERK_RAGE, NUM_POTIONS, NUM_POTIONS },
+    { POT_HASTE, NUM_POTIONS, NUM_POTIONS, NUM_POTIONS },
     { POT_HASTE, POT_HEAL_WOUNDS, NUM_POTIONS, NUM_POTIONS },
     { POT_HASTE, POT_BRILLIANCE, NUM_POTIONS, NUM_POTIONS },
-    { POT_HASTE, POT_AGILITY, NUM_POTIONS, NUM_POTIONS },
-    { POT_MIGHT, POT_AGILITY, NUM_POTIONS, NUM_POTIONS },
-    { POT_HASTE, POT_FLIGHT, NUM_POTIONS, NUM_POTIONS },
     { POT_HASTE, POT_RESISTANCE, NUM_POTIONS, NUM_POTIONS },
-    { POT_RESISTANCE, POT_AGILITY, NUM_POTIONS, NUM_POTIONS },
-    { POT_RESISTANCE, POT_FLIGHT, NUM_POTIONS, NUM_POTIONS },
-    { POT_INVISIBILITY, POT_AGILITY, NUM_POTIONS , NUM_POTIONS },
+    { POT_MIGHT, POT_STABBING, NUM_POTIONS, NUM_POTIONS },
+    { POT_BRILLIANCE, POT_MAGIC, NUM_POTIONS, NUM_POTIONS },
+    { POT_INVISIBILITY, POT_STABBING, NUM_POTIONS , NUM_POTIONS },
+    { POT_INVISIBILITY, POT_STABBING, POT_MIGHT, NUM_POTIONS },
     { POT_HEAL_WOUNDS, POT_CURING, POT_MAGIC, NUM_POTIONS },
     { POT_HEAL_WOUNDS, POT_CURING, POT_BERSERK_RAGE, NUM_POTIONS },
-    { POT_HEAL_WOUNDS, POT_HASTE, POT_AGILITY, NUM_POTIONS },
-    { POT_MIGHT, POT_AGILITY, POT_BRILLIANCE, NUM_POTIONS },
-    { POT_HASTE, POT_AGILITY, POT_FLIGHT, NUM_POTIONS },
-    { POT_FLIGHT, POT_AGILITY, POT_INVISIBILITY, NUM_POTIONS },
-    { POT_RESISTANCE, POT_MIGHT, POT_AGILITY, NUM_POTIONS },
+    { POT_MIGHT, POT_BRILLIANCE, NUM_POTIONS, NUM_POTIONS },
+    { POT_RESISTANCE, NUM_POTIONS, NUM_POTIONS, NUM_POTIONS },
+    { POT_RESISTANCE, POT_MIGHT, POT_STABBING, NUM_POTIONS },
     { POT_RESISTANCE, POT_MIGHT, POT_HASTE, NUM_POTIONS },
-    { POT_RESISTANCE, POT_INVISIBILITY, POT_AGILITY, NUM_POTIONS },
+    { POT_RESISTANCE, POT_INVISIBILITY, POT_STABBING, NUM_POTIONS },
+    { POT_LIGNIFY, POT_MIGHT, POT_RESISTANCE, NUM_POTIONS },
 };
 
 static void _gozag_add_potions(CrawlVector &vec, potion_type *which)
@@ -2717,9 +2715,6 @@ static int _gozag_max_shops()
 {
     const int max_non_food_shops = 3;
 
-    // add a food shop if you can eat (non-mu/dj)
-    if (!you_foodless(false))
-        return max_non_food_shops + 1;
     return max_non_food_shops;
 }
 
@@ -2816,15 +2811,10 @@ static void _setup_gozag_shop(int index, vector<shop_type> &valid_shops)
     ASSERT(!you.props.exists(make_stringf(GOZAG_SHOPKEEPER_NAME_KEY, index)));
 
     shop_type type = NUM_SHOPS;
-    if (index == 0 && !you_foodless(false))
-        type = SHOP_FOOD;
-    else
-    {
-        int choice = random2(valid_shops.size());
-        type = valid_shops[choice];
-        // Don't choose this shop type again for this merchant call.
-        valid_shops.erase(valid_shops.begin() + choice);
-    }
+    int choice = random2(valid_shops.size());
+    type = valid_shops[choice];
+    // Don't choose this shop type again for this merchant call.
+    valid_shops.erase(valid_shops.begin() + choice);
     you.props[make_stringf(GOZAG_SHOP_TYPE_KEY, index)].get_int() = type;
 
     you.props[make_stringf(GOZAG_SHOPKEEPER_NAME_KEY, index)].get_string()
@@ -2844,24 +2834,6 @@ static void _setup_gozag_shop(int index, vector<shop_type> &valid_shops)
 }
 
 /**
- * If Gozag's version of a given shop type has a special name, what is it?
- *
- * @param type      The type of shop in question.
- * @return          A special name for the shop (replacing its type-name) if
- *                  appropriate, or an empty string otherwise.
- */
-static string _gozag_special_shop_name(shop_type type)
-{
-    if (type == SHOP_FOOD)
-    {
-        if (you.species == SP_GHOUL)
-            return "Carrion"; // yum!
-    }
-
-    return "";
-}
-
-/**
  * Build a string describing the name, price & type of the shop being offered
  * at the given index.
  *
@@ -2878,10 +2850,7 @@ static string _describe_gozag_shop(int index)
         apostrophise(you.props[make_stringf(GOZAG_SHOPKEEPER_NAME_KEY,
                                             index)].get_string());
     const shop_type type = _gozag_shop_type(index);
-    const string special_name = _gozag_special_shop_name(type);
-    const string type_name = !special_name.empty() ?
-                                special_name :
-                                shop_type_name(type);
+    const string type_name = shop_type_name(type);
     const string suffix =
         you.props[make_stringf(GOZAG_SHOP_SUFFIX_KEY, index)].get_string();
 
@@ -2939,15 +2908,10 @@ static string _gozag_shop_spec(int index)
     if (!suffix.empty())
         suffix = " suffix:" + suffix;
 
-    string spec_type = _gozag_special_shop_name(type);
-    if (!spec_type.empty())
-        spec_type = " type:" + spec_type;
-
-    return make_stringf("%s shop name:%s%s%s gozag",
+    return make_stringf("%s shop name:%s%s gozag",
                         shoptype_to_str(type),
                         replace_all(name, " ", "_").c_str(),
-                        suffix.c_str(),
-                        spec_type.c_str());
+                        suffix.c_str());
 
 }
 
@@ -2992,10 +2956,10 @@ bool gozag_call_merchant()
     for (int i = 0; i < NUM_SHOPS; i++)
     {
         shop_type type = static_cast<shop_type>(i);
-        // if they are useful to the player, food shops are handled through the
-        // first index.
+#if TAG_MAJOR_VERSION == 34
         if (type == SHOP_FOOD)
             continue;
+#endif
         if (type == SHOP_DISTILLERY && you.species == SP_MUMMY)
             continue;
         if (type == SHOP_EVOKABLES && you.get_mutation_level(MUT_NO_ARTIFICE))
@@ -3248,7 +3212,6 @@ spret qazlal_upheaval(coord_def target, bool quiet, bool fail)
 #ifdef USE_TILE
     beam.tile_beam = -1;
 #endif
-    beam.draw_delay  = 0;
 
     if (target.origin())
     {
@@ -3341,22 +3304,34 @@ spret qazlal_upheaval(coord_def target, bool quiet, bool fail)
                 affected.push_back(*ri);
         }
     }
-
-    for (coord_def pos : affected)
-    {
-        beam.draw(pos);
-        if (!quiet)
-            scaled_delay(25);
-    }
     if (!quiet)
+        shuffle_array(affected);
+
+    // for `quiet` calls (i.e. disaster area), don't delay for individual tiles
+    // at all -- do the delay per upheaval draw. This will also fully suppress
+    // the redraw per tile.
+    beam.draw_delay = quiet ? 0 : 25;
+    for (coord_def pos : affected)
+        beam.draw(pos, false);
+
+    if (quiet)
     {
-        scaled_delay(100);
-        mprf(MSGCH_GOD, "%s", message.c_str());
+        // When `quiet`, refresh the view after each complete draw pass.
+        // why this call dance to refresh? I just copied it from bolt::draw
+        viewwindow(false);
+        update_screen();
+        scaled_delay(50); // add some delay per upheaval draw, otherwise it all
+                          // goes by too fast.
     }
     else
-        scaled_delay(25);
+    {
+        scaled_delay(200); // This is here to make it easy for the player to
+                           // see the overall impact of the upheaval
+        mprf(MSGCH_GOD, "%s", message.c_str());
+    }
 
     int wall_count = 0;
+    beam.animate = false; // already drawn
 
     for (coord_def pos : affected)
     {
@@ -3548,7 +3523,7 @@ bool qazlal_disaster_area()
         targets.erase(targets.begin() + which);
         weights.erase(weights.begin() + which);
     }
-    scaled_delay(100);
+    scaled_delay(200);
 
     return true;
 }
@@ -3600,8 +3575,8 @@ static map<const char*, vector<mutation_type>> sacrifice_vector_map =
 /// School-disabling mutations that will be painful for most characters.
 static const vector<mutation_type> _major_arcane_sacrifices =
 {
-    MUT_NO_CHARM_MAGIC,
     MUT_NO_CONJURATION_MAGIC,
+    MUT_NO_NECROMANCY_MAGIC,
     MUT_NO_SUMMONING_MAGIC,
     MUT_NO_TRANSLOCATION_MAGIC,
 };
@@ -3610,7 +3585,6 @@ static const vector<mutation_type> _major_arcane_sacrifices =
 static const vector<mutation_type> _moderate_arcane_sacrifices =
 {
     MUT_NO_TRANSMUTATION_MAGIC,
-    MUT_NO_NECROMANCY_MAGIC,
     MUT_NO_HEXES_MAGIC,
 };
 
@@ -3656,6 +3630,13 @@ static mutation_type _random_valid_sacrifice(const vector<mutation_type> &muts)
             continue;
 
         // Special case a few weird interactions:
+
+        // Don't offer to sacrifice summoning magic when already hated by all.
+        if (mut == MUT_NO_SUMMONING_MAGIC
+            && you.get_mutation_level(MUT_NO_LOVE))
+        {
+            continue;
+        }
 
         // Vampires can't get inhibited regeneration for some reason related
         // to their existing regen silliness.
@@ -3722,7 +3703,7 @@ static void _choose_arcana_mutations()
         = you.props[ARCANA_SAC_KEY].get_vector();
     ASSERT(current_arcane_sacrifices.empty());
 
-    for (const vector<mutation_type> arcane_sacrifice_list :
+    for (const vector<mutation_type> &arcane_sacrifice_list :
                                     _arcane_sacrifice_lists)
     {
         const mutation_type sacrifice =
@@ -3742,7 +3723,7 @@ static void _choose_arcana_mutations()
  */
 static bool _player_sacrificed_arcana()
 {
-    for (const vector<mutation_type> arcane_sacrifice_list :
+    for (const vector<mutation_type> &arcane_sacrifice_list :
                                     _arcane_sacrifice_lists)
     {
         for (mutation_type sacrifice : arcane_sacrifice_list)
@@ -3874,11 +3855,11 @@ static int _get_stat_piety(stat_type input_stat, int multiplier)
 {
     int stat_val = 3; // If this is your highest stat.
     if (you.base_stats[STAT_INT] > you.base_stats[input_stat])
-            stat_val -= 1;
+        stat_val -= 1;
     if (you.base_stats[STAT_STR] > you.base_stats[input_stat])
-            stat_val -= 1;
+        stat_val -= 1;
     if (you.base_stats[STAT_DEX] > you.base_stats[input_stat])
-            stat_val -= 1;
+        stat_val -= 1;
     return stat_val * multiplier;
 }
 
@@ -3988,7 +3969,7 @@ int get_sacrifice_piety(ability_type sac, bool include_skill)
                 piety_gain = 1;
             }
             else if (you.get_mutation_level(MUT_NO_SUMMONING_MAGIC)
-                || you.get_mutation_level(MUT_NO_ARTIFICE))
+                     || you.get_mutation_level(MUT_NO_ARTIFICE))
             {
                 piety_gain /= 2;
             }
@@ -4347,6 +4328,7 @@ static void _extra_sacrifice_code(ability_type sac)
         }
 
         redraw_screen();
+        update_screen();
     }
 }
 
@@ -4551,6 +4533,7 @@ bool ru_do_sacrifice(ability_type sac)
     _ru_expire_sacrifices();
     ru_reset_sacrifice_timer(true);
     redraw_screen(); // pretty much everything could have changed
+    update_screen();
     return true;
 }
 
@@ -4629,7 +4612,7 @@ void ru_reset_sacrifice_timer(bool clear_timer, bool faith_penalty)
         }
     }
 
-    delay = div_rand_round((delay + added_delay) * (3 + you.faith()), 3);
+    delay = div_rand_round((delay + added_delay) * (3 - you.faith()), 3);
     if (crawl_state.game_is_sprint())
         delay /= SPRINT_MULTIPLIER;
 
@@ -5327,7 +5310,10 @@ spret uskayaw_grand_finale(bool fail)
         throw_monster_bits(*mons); // have some fun while we're at it
     }
 
-    monster_die(*mons, KILL_YOU, NON_MONSTER, false);
+    // throw_monster_bits can cause mons to be killed already, e.g. via pain
+    // bond or dismissing summons
+    if (mons->alive())
+        monster_die(*mons, KILL_YOU, NON_MONSTER, false);
 
     if (!mons->alive())
         move_player_to_grid(beam.target, false);
@@ -5707,7 +5693,7 @@ bool wu_jian_can_wall_jump(const coord_def& target, string &error_ret)
         if (!feat_can_wall_jump_against(grd(target)))
         {
             error_ret = string("You cannot wall jump against ") +
-                feature_description_at(target, false, DESC_THE, true);
+                feature_description_at(target, false, DESC_THE) + ".";
         }
         else
             error_ret = "";
@@ -5751,7 +5737,6 @@ bool wu_jian_can_wall_jump(const coord_def& target, string &error_ret)
         }
         else
             error_ret = "You have no room to wall jump there.";
-        you.attribute[ATTR_WALL_JUMP_READY] = 0;
         return false;
     }
     error_ret = "";
@@ -5767,7 +5752,7 @@ bool wu_jian_can_wall_jump(const coord_def& target, string &error_ret)
  * @param targ the movement target (i.e. the wall being moved against).
  * @return whether the jump culminated.
  */
-bool wu_jian_do_wall_jump(coord_def targ, bool ability)
+bool wu_jian_do_wall_jump(coord_def targ)
 {
     // whether there's space in the first place is checked earlier
     // in wu_jian_can_wall_jump.
@@ -5777,58 +5762,37 @@ bool wu_jian_do_wall_jump(coord_def targ, bool ability)
     if (!check_moveto(wall_jump_landing_spot, "wall jump"))
     {
         you.turn_is_over = false;
-        if (!ability && Options.wall_jump_prompt)
-        {
-            mprf(MSGCH_PLAIN, "You take your %s off %s.",
-                 you.foot_name(true).c_str(),
-                 feature_description_at(targ, false, DESC_THE, false).c_str());
-            you.attribute[ATTR_WALL_JUMP_READY] = 0;
-        }
-        return false;
-    }
-
-    if (!ability
-        && Options.wall_jump_prompt
-        && you.attribute[ATTR_WALL_JUMP_READY] == 0)
-    {
-        you.turn_is_over = false;
-        mprf(MSGCH_PLAIN,
-             "You put your %s on %s. Move against it again to jump.",
-             you.foot_name(true).c_str(),
-             feature_description_at(targ, false, DESC_THE, false).c_str());
-        you.attribute[ATTR_WALL_JUMP_READY] = 1;
         return false;
     }
 
     auto initial_position = you.pos();
     move_player_to_grid(wall_jump_landing_spot, false);
-    if (!ability)
-        count_action(CACT_INVOKE, ABIL_WU_JIAN_WALLJUMP);
-    wu_jian_wall_jump_effects(initial_position);
+    wu_jian_wall_jump_effects();
 
-    if (ability)
+    if (you.duration[DUR_WATER_HOLD])
     {
-        // TODO: code duplication with movement...
-        // TODO: check engulfing
-        int wall_jump_modifier = (you.attribute[ATTR_SERPENTS_LASH] != 1) ? 2
-                                                                          : 1;
-
-        you.time_taken = player_speed() * wall_jump_modifier
-                         * player_movement_speed();
-        you.time_taken = div_rand_round(you.time_taken, 10);
-
-        // need to set this here in case serpent's lash isn't active
-        you.turn_is_over = true;
-        request_autopickup();
-        wu_jian_post_move_effects(true, initial_position);
+        mpr("You slip free of the water engulfing you.");
+        you.props.erase("water_holder");
+        you.clear_far_engulf();
     }
+
+    int wall_jump_modifier = (you.attribute[ATTR_SERPENTS_LASH] != 1) ? 2
+                                                                      : 1;
+
+    you.time_taken = player_speed() * wall_jump_modifier
+                     * player_movement_speed();
+    you.time_taken = div_rand_round(you.time_taken, 10);
+
+    // need to set this here in case serpent's lash isn't active
+    you.turn_is_over = true;
+    request_autopickup();
+    wu_jian_post_move_effects(true, initial_position);
+
     return true;
 }
 
 spret wu_jian_wall_jump_ability()
 {
-    // This needs to be kept in sync with direct walljumping via movement.
-    // TODO: Refactor to call the same code.
     ASSERT(!crawl_state.game_is_arena());
 
     if (crawl_state.is_repeating_cmd())
@@ -5915,7 +5879,7 @@ spret wu_jian_wall_jump_ability()
             break;
     }
 
-    if (!wu_jian_do_wall_jump(beam.target, true))
+    if (!wu_jian_do_wall_jump(beam.target))
         return spret::abort;
 
     crawl_state.cancel_cmd_again();
@@ -5924,4 +5888,19 @@ spret wu_jian_wall_jump_ability()
     apply_barbs_damage();
     remove_ice_armour_movement();
     return spret::success;
+}
+
+void wu_jian_heavenly_storm()
+{
+    mprf(MSGCH_GOD, "The air is filled with shimmering golden clouds!");
+    wu_jian_sifu_message(" says: The storm will not cease as long as you "
+                         "keep fighting, disciple!");
+
+    for (radius_iterator ai(you.pos(), 2, C_SQUARE, LOS_SOLID); ai; ++ai)
+        if (!cell_is_solid(*ai))
+            place_cloud(CLOUD_GOLD_DUST, *ai, 5 + random2(5), &you);
+
+    you.set_duration(DUR_HEAVENLY_STORM, random_range(2, 3));
+    you.props[WU_JIAN_HEAVENLY_STORM_KEY] = WU_JIAN_HEAVENLY_STORM_INITIAL;
+    invalidate_agrid(true);
 }

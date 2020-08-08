@@ -16,7 +16,6 @@
 
 #include "artefact.h"
 #include "art-enum.h"
-#include "food.h"
 #include "god-conduct.h"
 #include "god-passive.h"
 #include "item-name.h"
@@ -24,7 +23,6 @@
 #include "items.h"
 #include "libutil.h"
 #include "potion-type.h"
-#include "religion.h"
 #include "skills.h"
 #include "spl-book.h"
 #include "spl-util.h"
@@ -112,12 +110,9 @@ bool is_potentially_evil_item(const item_def& item, bool calc_unid)
         }
         break;
     case OBJ_WANDS:
-        if (item.sub_type == WAND_RANDOM_EFFECTS
-            || item.sub_type == WAND_CLOUDS)
-        {
-            return true;
-        }
-        break;
+        return item.sub_type == WAND_RANDOM_EFFECTS;
+    case OBJ_MISCELLANY:
+        return item.sub_type == MISC_CONDENSER_VANE;
     default:
         break;
     }
@@ -161,8 +156,6 @@ bool is_evil_item(const item_def& item, bool calc_unid)
 
     switch (item.base_type)
     {
-    case OBJ_POTIONS:
-        return is_blood_potion(item);
     case OBJ_SCROLLS:
         return item.sub_type == SCR_TORMENT;
     case OBJ_STAVES:
@@ -294,11 +287,9 @@ bool is_hasty_item(const item_def& item, bool calc_unid)
     case OBJ_ARMOUR:
         {
         const int item_brand = get_armour_ego_type(item);
-        retval = (item_brand == SPARM_RUNNING);
+        retval = (item_brand == SPARM_RUNNING
+                  || item_brand == SPARM_RAMPAGING);
         }
-        break;
-    case OBJ_JEWELLERY:
-        retval = (item.sub_type == AMU_RAGE && !is_artefact(item));
         break;
     case OBJ_POTIONS:
         retval = (item.sub_type == POT_HASTE
@@ -322,17 +313,27 @@ bool is_channeling_item(const item_def& item, bool calc_unid)
     if (!calc_unid && !item_type_known(item))
         return false;
 
-    return item.base_type == OBJ_STAVES && item.sub_type == STAFF_ENERGY
-           || item.base_type == OBJ_MISCELLANY
-              && item.sub_type == MISC_CRYSTAL_BALL_OF_ENERGY;
+    return item.base_type == OBJ_STAVES && item.sub_type == STAFF_ENERGY;
 }
 
 bool is_wizardly_item(const item_def& item, bool calc_unid)
 {
-    if (is_unrandom_artefact(item, UNRAND_BATTLE))
+    if ((calc_unid || item_brand_known(item))
+        && get_weapon_brand(item) == SPWPN_PAIN)
+    {
         return true;
+    }
 
-    return false;
+    if (is_unrandom_artefact(item, UNRAND_WUCAD_MU)
+        || is_unrandom_artefact(item, UNRAND_MAJIN)
+        || is_unrandom_artefact(item, UNRAND_BATTLE)
+        || is_unrandom_artefact(item, UNRAND_ELEMENTAL_STAFF)
+        || is_unrandom_artefact(item, UNRAND_OLGREB))
+    {
+        return true;
+    }
+
+    return item.base_type == OBJ_STAVES;
 }
 
 /**
@@ -400,11 +401,13 @@ vector<conduct_type> item_conducts(const item_def &item)
         conducts.push_back(DID_SPELL_MEMORISE);
 
     if ((item.sub_type == BOOK_MANUAL && item_type_known(item)
-        && is_magic_skill((skill_type)item.plus))
-        || is_wizardly_item(item))
+         && is_magic_skill((skill_type)item.plus)))
     {
         conducts.push_back(DID_SPELL_PRACTISE);
     }
+
+    if (is_wizardly_item(item, false))
+        conducts.push_back(DID_WIZARDLY_ITEM);
 
     if (_is_potentially_hasty_item(item) || is_hasty_item(item, false))
         conducts.push_back(DID_HASTY);
@@ -442,9 +445,6 @@ bool god_likes_item_type(const item_def &item, god_type which_god)
             // Peaceful healer god: no weapons, no berserking.
             if (item.base_type == OBJ_WEAPONS)
                 return false;
-
-            if (item.is_type(OBJ_JEWELLERY, AMU_RAGE))
-                return false;
             break;
 
         case GOD_SHINING_ONE:
@@ -477,9 +477,6 @@ bool god_likes_item_type(const item_def &item, god_type which_god)
         case GOD_CHEIBRIADOS:
             // Slow god: no quick blades, no berserking.
             if (item.is_type(OBJ_WEAPONS, WPN_QUICK_BLADE))
-                return false;
-
-            if (item.is_type(OBJ_JEWELLERY, AMU_RAGE))
                 return false;
             break;
 

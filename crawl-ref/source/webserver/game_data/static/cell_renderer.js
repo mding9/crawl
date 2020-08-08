@@ -185,7 +185,7 @@ function ($, view_data, main, tileinfo_player, icons, dngn, enums,
             var is_in_water = in_water(cell);
 
             // draw clouds
-            if (cell.cloud.value && cell.cloud.value < dngn.FEAT_MAX)
+            if (cell.cloud.value)
             {
                 this.ctx.save();
                 // If there will be a front/back cloud pair, draw
@@ -320,8 +320,7 @@ function ($, view_data, main, tileinfo_player, icons, dngn, enums,
             this.draw_foreground(x, y, map_cell);
 
             // draw clouds over stuff
-            if (fg_idx && cell.cloud.value
-                && cell.cloud.value < dngn.FEAT_MAX)
+            if (fg_idx && cell.cloud.value)
             {
                 this.ctx.save();
                 try
@@ -346,6 +345,18 @@ function ($, view_data, main, tileinfo_player, icons, dngn, enums,
                 {
                     this.ctx.restore();
                 }
+            }
+
+            // Draw main-tile overlays (i.e. zaps), on top of clouds.
+            if (cell.ov)
+            {
+                $.each(cell.ov, function (i, overlay)
+                        {
+                            if (dngn.FEAT_MAX <= overlay && overlay < main.MAIN_MAX)
+                            {
+                                renderer.draw_main(overlay, x, y);
+                            }
+                        });
             }
 
             this.render_flash(x, y);
@@ -641,7 +652,9 @@ function ($, view_data, main, tileinfo_player, icons, dngn, enums,
                 {
                     $.each(cell.ov, function (i, overlay)
                            {
-                               if (overlay &&
+                               if (overlay > dngn.DNGN_MAX)
+                                   return;
+                               else if (overlay &&
                                    (bg_idx < dngn.DNGN_FIRST_TRANSPARENT ||
                                     overlay > dngn.FLOOR_MAX))
                                {
@@ -701,6 +714,16 @@ function ($, view_data, main, tileinfo_player, icons, dngn, enums,
                             this.draw_dngn(dngn.HALO_GD_NEUTRAL, x, y);
                         else if (fg.NEUTRAL)
                             this.draw_dngn(dngn.HALO_NEUTRAL, x, y);
+
+                        // Monster difficulty
+                        if (fg.TRIVIAL)
+                            this.draw_dngn(dngn.THREAT_TRIVIAL, x, y);
+                        else if (fg.EASY)
+                            this.draw_dngn(dngn.THREAT_EASY, x, y);
+                        else if (fg.TOUGH)
+                            this.draw_dngn(dngn.THREAT_TOUGH, x, y);
+                        else if (fg.NASTY)
+                            this.draw_dngn(dngn.THREAT_NASTY, x, y);
 
                         if (cell.highlighted_summoner)
                             this.draw_dngn(dngn.HALO_SUMMONER, x, y);
@@ -832,6 +855,17 @@ function ($, view_data, main, tileinfo_player, icons, dngn, enums,
                 this.draw_icon(icons.POISON, x, y, -status_shift, 0);
                 status_shift += 5;
             }
+            else if (fg.MORE_POISON)
+            {
+                this.draw_icon(icons.MORE_POISON, x, y, -status_shift, 0);
+                status_shift += 5;
+            }
+            else if (fg.MAX_POISON)
+            {
+                this.draw_icon(icons.MAX_POISON, x, y, -status_shift, 0);
+                status_shift += 5;
+            }
+
             if (fg.STICKY_FLAME)
             {
                 this.draw_icon(icons.STICKY_FLAME, x, y, -status_shift, 0);
@@ -851,6 +885,11 @@ function ($, view_data, main, tileinfo_player, icons, dngn, enums,
             {
                 this.draw_icon(icons.VILE_CLUTCH, x, y, -status_shift, 0);
                 status_shift += 11;
+            }
+            if (fg.POSSESSABLE)
+            {
+                this.draw_icon(icons.POSSESSABLE, x, y, -status_shift, 0);
+                status_shift += 6;
             }
             if (fg.GLOWING)
             {
@@ -920,11 +959,6 @@ function ($, view_data, main, tileinfo_player, icons, dngn, enums,
             if (fg.INFESTED)
             {
                 this.draw_icon(icons.INFESTED, x, y, -status_shift, 0);
-                status_shift += 6;
-            }
-            if (fg.PINNED)
-            {
-                this.draw_icon(icons.PINNED, x, y, -status_shift, 0);
                 status_shift += 6;
             }
             if (fg.RECALL)
